@@ -38,17 +38,23 @@ class gz::sim::systems::ReversibleMulticopterMotorModelPrivate
 {
   public: void OnActuatorMsg(const msgs::Actuators &_msg);
   public: void UpdateForcesAndMoments(EntityComponentManager &_ecm);
+
   public: Entity jointEntity;
+  public: std::string jointName;
+
   public: Entity linkEntity;
+  public: std::string linkName;
+
   public: Entity parentLinkEntity; 
-  public: std::string jointName = ""; 
-  public: std::string linkName = "";
   public: std::string parentLinkName = "";
+
   public: Model model{kNullEntity};
-  public: std::string robot_name = "";
+
+  public: std::string robotNameSpace = "";
   public: std::string commandSubTopic = "";
+
   public: int motorNumber = 0;
-  public: double maxRotVelocity = 838.0;
+  public: double maxRotVelocity = 2000.0;
   public: double motorInputVel = 0.0;
   public: double simVelSlowDown = 10.0;
 
@@ -70,9 +76,10 @@ void ReversibleMulticopterMotorModel::Configure(const Entity &_entity,
     EntityComponentManager &_ecm,
     EventManager &/*_eventMgr*/)
 {
-  this->dataPtr->model = Model(_entity);
+  using string = std::string;
+  dataPtr->model = Model(_entity);
 
-  if (!this->dataPtr->model.Valid(_ecm))
+  if (!dataPtr->model.Valid(_ecm))
   {
     gzerr << "ReversibleMulticopterMotorModel plugin should be attached to a model "
            << "entity. Failed to initialize." << std::endl;
@@ -81,42 +88,47 @@ void ReversibleMulticopterMotorModel::Configure(const Entity &_entity,
 
   auto sdfClone = _sdf->Clone();
 
+  // Robot Name Space
   if(sdfClone->HasElement("robotName")){
-    std::string robotName = sdfClone->Get<std::string>("robotName");
-    this->dataPtr->robot_name = robotName;
-  }else{
-    this->dataPtr->robot_name = "default_robot";
-    gzerr << "robotName not specified, using default_robot.\n";
-  }
-
-  if (sdfClone->HasElement("jointName"))
-  {
-    dataPtr->jointName = sdfClone->Get<std::string>("jointName");
-    dataPtr->jointEntity = this->dataPtr->model.JointByName(_ecm, dataPtr->jointName);
-  }
-
-  if (sdfClone->HasElement("linkName"))
-  {
-    dataPtr->linkName = sdfClone->Get<std::string>("linkName");
-    dataPtr->linkEntity = this->dataPtr->model.LinkByName(_ecm, dataPtr->linkName);
-  }
-
-  if (sdfClone->HasElement("commandSubTopic"))
-  {
-    this->dataPtr->commandSubTopic = sdfClone->Get<std::string>("commandSubTopic");
-  }
-
-  if (sdfClone->HasElement("motorNumber"))
-  {
-    this->dataPtr->motorNumber = sdfClone->Get<unsigned int>("motorNumber");
+    dataPtr->robotNameSpace = sdfClone->Get<string>("robotName");
   } else {
-    this->dataPtr->motorNumber = 0;
-    gzerr << "motorNumber not specified, using 0.\n";
+    gzwarn << "Robot Name Not Passed, using entity name\n";
+    dataPtr->robotNameSpace = dataPtr->model.Name(_ecm);
   }
 
-  if (this->dataPtr->jointName != "") {
-    dataPtr->parentLinkName = _ecm.Component<components::ParentLinkName>(dataPtr->jointEntity)->Data();
-    dataPtr->parentLinkEntity  = dataPtr->model.LinkByName(_ecm, dataPtr->parentLinkName);
+  // Command to Sub for motor control
+  if (sdfClone->HasElement("commandSubTopic")){
+    dataPtr->commandSubTopic = sdfClone->Get<string>("commandSubTopic");
+  } else {
+    gzerr << "ReversibleMultiCopterMotorModel found an empty commandSubTopic parameter. "
+          << "Failed to initialize.";
+    return;
+  }
+
+  // Joint Name
+  if (sdfClone->HasElement("jointName")) {
+    dataPtr->jointName = sdfClone->Get<string>("jointName");
+  } 
+
+  if (dataPtr->jointName.empty()) {
+    gzerr << "ReversibleMulticopterMotorModel found an empty jointName parameter. "
+           << "Failed to initialize.";
+    return;
+  }
+
+  // Link Name
+  if (sdfClone->HasElement("linkName")) {
+    dataPtr->linkName = sdfClone->Get<string>("linkName");
+  }
+
+  if (dataPtr->linkName.empty()) {
+    gzerr << "ReversibleMulticopterMotorModel found an empty linkName parameter. "
+           << "Failed to initialize.";
+    return;
+  }
+
+  if (sdfClone->HasElement("motorNumber")) {
+    dataPtr->motorNumber = sdfClone->Get<int>("motorNumber");
   }
 
   auto a0Thrust = sdfClone->Get<double>("a0ThrustConstant");
@@ -134,11 +146,10 @@ void ReversibleMulticopterMotorModel::Configure(const Entity &_entity,
   this->dataPtr->TorquePolynomial = {a0Torque, a1Torque, a2Torque, a3Torque};
 
 
-  dataPtr->simVelSlowDown = sdfClone->Get<double>("simVelSlowDown");
-
-  std::string topic = transport::TopicUtils::AsValidTopic( 
-    "/" +  this->dataPtr->robot_name + "/" + this->dataPtr->commandSubTopic
+  string topic = transport::TopicUtils::AsValidTopic( 
+    "/" +  dataPtr->robotNameSpace + "/" + dataPtr->commandSubTopic
   );
+
   if (topic.empty())
   {
     gzerr << "Failed to create topic for command subscription." << std::endl;
@@ -146,10 +157,11 @@ void ReversibleMulticopterMotorModel::Configure(const Entity &_entity,
   }
   else
   {
-    gzdbg << "Listening to topic: " << topic << std::endl;
+    gzerr << "Listening to topic: " << topic << std::endl;
   }
   this->dataPtr->node.Subscribe(topic,
       &ReversibleMulticopterMotorModelPrivate::OnActuatorMsg, this->dataPtr.get());
+  gzerr << "Subscribed to topic: " << topic << std::endl;
 }
 
 void ReversibleMulticopterMotorModel::PreUpdate(const UpdateInfo &_info,
@@ -161,18 +173,68 @@ void ReversibleMulticopterMotorModel::PreUpdate(const UpdateInfo &_info,
     return;
   }
 
-  if (this->dataPtr->jointEntity == kNullEntity ||
-      this->dataPtr->linkEntity == kNullEntity) {
-    gzerr << "Joint or link entity is null." << std::endl;
+  if (_info.dt < std::chrono::steady_clock::duration::zero())
+  {
+    gzwarn << "Detect Jump back in time [" <<
+      std::chrono::duration_cast<std::chrono::seconds>(_info.dt).count() << 
+      "s]. System may not work properl" << std::endl; 
+  }
+
+  if (dataPtr->jointEntity == kNullEntity) {
+    dataPtr->jointEntity = dataPtr->model.JointByName(_ecm, dataPtr->jointName);
+
+    const auto parentLinkName = _ecm.Component<components::ParentLinkName>(
+        dataPtr->jointEntity);
+    dataPtr->parentLinkName = parentLinkName->Data();
+  }
+
+  if (dataPtr->linkEntity == kNullEntity) {
+    dataPtr->linkEntity = dataPtr->model.LinkByName(_ecm, dataPtr->linkName);
+  }
+
+  if (dataPtr->parentLinkEntity == kNullEntity) {
+    dataPtr->parentLinkEntity = dataPtr->model.LinkByName(_ecm, dataPtr->parentLinkName);
+  }
+
+  if (dataPtr->jointEntity == kNullEntity || 
+      dataPtr->linkEntity == kNullEntity || 
+      dataPtr->parentLinkEntity == kNullEntity) {
     return;
   }
 
-  if (!_ecm.Component<components::JointVelocityCmd>(this->dataPtr->jointEntity))
-  {
-    _ecm.CreateComponent(this->dataPtr->jointEntity, components::JointVelocityCmd({0}));
+
+  bool doUpdateForcesAndMoments = true;
+  const auto jointVelocity = _ecm.Component<components::JointVelocity> (dataPtr->jointEntity);
+
+  if (!jointVelocity) {
+    _ecm.CreateComponent(dataPtr->jointEntity, components::JointVelocity());
+  } else if (jointVelocity->Data().empty()) {
+    doUpdateForcesAndMoments = false;
   }
 
-  this->dataPtr->UpdateForcesAndMoments(_ecm);
+  if (!_ecm.Component<components::JointVelocityCmd>(dataPtr->jointEntity)) {
+    _ecm.CreateComponent(dataPtr->jointEntity, components::JointVelocityCmd({0}));
+    doUpdateForcesAndMoments = false;
+  }
+
+  if (!_ecm.Component<components::WorldPose>(dataPtr->linkEntity)){
+    _ecm.CreateComponent(dataPtr->linkEntity, components::WorldPose());
+    doUpdateForcesAndMoments = false;
+  }
+  if (!_ecm.Component<components::WorldLinearVelocity>(dataPtr->linkEntity)) {
+    _ecm.CreateComponent(dataPtr->linkEntity,
+        components::WorldLinearVelocity());
+    doUpdateForcesAndMoments = false;
+  }
+
+  if (!_ecm.Component<components::WorldPose>(this->dataPtr->parentLinkEntity)) {
+    _ecm.CreateComponent(this->dataPtr->parentLinkEntity, components::WorldPose());
+    doUpdateForcesAndMoments = false;
+  }
+
+  if(doUpdateForcesAndMoments) {
+    this->dataPtr->UpdateForcesAndMoments(_ecm);
+  }
 }
 
 void ReversibleMulticopterMotorModelPrivate::OnActuatorMsg(
@@ -215,10 +277,14 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
       this->motorInputVel = std::clamp(msg->normalized(this->motorNumber), -1.0, 1.0) * this->maxRotVelocity;  
     }
   }
-  
+
+
   sim::Link link(this->linkEntity);
   const auto worldPose = link.WorldPose(_ecm);
   using Vector3 = math::Vector3d;
+
+  if  (!worldPose.has_value())
+    gzerr << "worldPose is null.\n";
 
   // Compute thrust according to the polynomial we have defined
   double thrust = 0.0;
@@ -227,7 +293,7 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
   }
 
   link.AddWorldForce(_ecm, worldPose->Rot().RotateVector(Vector3(0, 0, thrust)));
-
+  
   double torque = 0.0;
 
   for (unsigned int i = 0; i < this->TorquePolynomial.size(); i++) {
@@ -238,7 +304,6 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
 
   const auto jointVelCmd = _ecm.Component<components::JointVelocityCmd>(
       this->jointEntity); 
-  *jointVelCmd = components::JointVelocityCmd({this->motorInputVel / this->simVelSlowDown});
 }
 
 GZ_ADD_PLUGIN(ReversibleMulticopterMotorModel,
