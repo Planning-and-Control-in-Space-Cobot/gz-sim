@@ -62,6 +62,8 @@ class gz::sim::systems::ReversibleMulticopterMotorModelPrivate
   public: std::vector<double> ThrustPolynomial = {0.0, 0.0, 0.0, 0.0};
 
   public: std::optional<msgs::Actuators> recvdActuatorsMsg;
+  public: std::chrono::steady_clock::time_point lastActuatorMsgTime;
+
   public: std::mutex recvdActuatorsMsgMutex;
   public: transport::Node node;
 };
@@ -234,6 +236,8 @@ void ReversibleMulticopterMotorModel::PreUpdate(const UpdateInfo &_info,
 
   if(doUpdateForcesAndMoments) {
     this->dataPtr->UpdateForcesAndMoments(_ecm);
+  } else {
+    gzerr << "Failed to update forces and moments\n";
   }
 }
 
@@ -242,6 +246,7 @@ void ReversibleMulticopterMotorModelPrivate::OnActuatorMsg(
 {
   std::lock_guard<std::mutex> lock(this->recvdActuatorsMsgMutex);
   this->recvdActuatorsMsg = _msg;
+  this->lastActuatorMsgTime = std::chrono::steady_clock::now();  // Store timestamp
 }
 
 void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
@@ -261,7 +266,10 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
     if (this->recvdActuatorsMsg.has_value())
     {
       msg = *this->recvdActuatorsMsg;
-      this->recvdActuatorsMsg.reset();
+      if (std::chrono::steady_clock::now() - this->lastActuatorMsgTime > std::chrono::seconds(1))
+      {
+        this->recvdActuatorsMsg.reset();
+      }
     }
   }
 
@@ -276,7 +284,11 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
     } else if (msg->normalized_size() > this->motorNumber) {
       this->motorInputVel = std::clamp(msg->normalized(this->motorNumber), -1.0, 1.0) * this->maxRotVelocity;  
     }
+  } else {
+    gzerr << "No actuator message received\n";
+    return;
   }
+  gzerr << "Message Received " << this->motorInputVel << std::endl;
 
 
   sim::Link link(this->linkEntity);
@@ -291,16 +303,42 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
   for (unsigned int i = 0; i < this->ThrustPolynomial.size(); i++) {
     thrust += this->ThrustPolynomial[i] * std::pow(this->motorInputVel, i);
   }
-
   link.AddWorldForce(_ecm, worldPose->Rot().RotateVector(Vector3(0, 0, thrust)));
-  
+
+
+  const auto baseLinkPose = _ecm.Component<components::WorldPose>(this->parentLinkEntity);
+  if (baseLinkPose) {
+      math::Quaterniond worldToBaseLinkRot = baseLinkPose->Data().Rot().Inverse();
+      math::Vector3d thrustInBaseLinkFrame = worldToBaseLinkRot.RotateVector(worldPose->Rot().RotateVector(Vector3(0, 0, thrust)));
+
+      //gzerr << "Motor " << this->motorNumber
+      //<< " | Distance to base_link: " 
+      //<< (worldPose->Pos() - baseLinkPose->Data().Pos()).Length()
+      //<< " | Position relative to base_link: " 
+      //<< baseLinkPose->Data().Rot().Inverse().RotateVector(worldPose->Pos() - baseLinkPose->Data().Pos())
+      //<< " | Rotation relative to base_link: " 
+      //<< (baseLinkPose->Data().Rot().Inverse() * worldPose->Rot())
+      //<< "| World Frame Thrust : "
+      //<< worldPose->Rot().RotateVector(Vector3(0, 0, thrust))
+      //<< "| Base Link Frame Thrust : "
+      //<< thrustInBaseLinkFrame
+      //<< std::endl;
+
+      auto distance_to_base_link = (worldPose->Pos() - baseLinkPose->Data().Pos()).Length();
+      auto position_relative_to_base_link = baseLinkPose->Data().Rot().Inverse().RotateVector(worldPose->Pos() - baseLinkPose->Data().Pos());
+      auto rotation_relative_to_base_link = (baseLinkPose->Data().Rot().Inverse() * worldPose->Rot());
+
+  }
+
+
   double torque = 0.0;
 
   for (unsigned int i = 0; i < this->TorquePolynomial.size(); i++) {
     torque += this->TorquePolynomial[i] * std::pow(this->motorInputVel, i);
   }
 
-  link.AddWorldForce(_ecm, worldPose->Rot().RotateVector(Vector3(0, 0, torque)));
+  // The torque force with this polinomial is wrong, since the computed torque polinomial involves both action and reaction torque in the benchmark, the physics engine will also apply an action torque (the dominant one) meanin we apply more torque than reality
+  //link.AddWorldForce(_ecm, worldPose->Rot().RotateVector(Vector3(0, 0, torque)));
 
   const auto jointVelCmd = _ecm.Component<components::JointVelocityCmd>(
       this->jointEntity); 
