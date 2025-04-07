@@ -353,39 +353,41 @@ void MulticopterMotorModel::Configure(const Entity &_entity,
           sdfClone->HasElement("a3TorqueConstant"))
       {
         // Add polynomial coefficients
-        if (this->dataPtr->jointName != "") {
-          dataPtr->parentLinkName = _ecm.Component<components::ParentLinkName>(dataPtr->jointEntity)->Data();
-          dataPtr->parentLinkEntity  = dataPtr->model.LinkByName(_ecm, dataPtr->parentLinkName);
-        }
-      
         auto a0Thrust = sdfClone->Get<double>("a0ThrustConstant");
         auto a1Thrust = sdfClone->Get<double>("a1ThrustConstant");
         auto a2Thrust = sdfClone->Get<double>("a2ThrustConstant");
         auto a3Thrust = sdfClone->Get<double>("a3ThrustConstant");
-      
         this->dataPtr->ThrustPolynomial = {a0Thrust, a1Thrust, a2Thrust, a3Thrust};
       
         auto a0Torque = sdfClone->Get<double>("a0TorqueConstant");
         auto a1Torque = sdfClone->Get<double>("a1TorqueConstant");
         auto a2Torque = sdfClone->Get<double>("a2TorqueConstant");
         auto a3Torque = sdfClone->Get<double>("a3TorqueConstant");
-      
         this->dataPtr->TorquePolynomial = {a0Torque, a1Torque, a2Torque, a3Torque};
       }
       else
       {
-        gzerr << "Please specify the thrust and torque polynomial coefficients.\n";
+        gzerr << "Please specify the thrust and torque polynomial coefficients. Minimum degree is three \n";
       }
 
       // Check for optional higher order coefficients
-      if(auto a4Thrust = sdfClone->GetElement("a4ThrustConstant"))
-        this->dataPtr->ThrustPolynomial.push_back(a4Thrust->Get<double>());
-      if(auto a5Thrust = sdfClone->GetElement("a5ThrustConstant"))
-        this->dataPtr->ThrustPolynomial.push_back(a5Thrust->Get<double>());
-      if(auto a4Torque = sdfClone->GetElement("a4TorqueConstant"))
-        this->dataPtr->TorquePolynomial.push_back(a4Torque->Get<double>());
-      if(auto a5Torque = sdfClone->GetElement("a5TorqueConstant"))
-        this->dataPtr->TorquePolynomial.push_back(a5Torque->Get<double>());
+      if(sdfClone->HasElement("a4ThrustConstant"))
+        this->dataPtr->ThrustPolynomial.push_back(sdfClone->GetElement("a4ThrustConstant")->Get<double>());
+      if(sdfClone->HasElement("a5ThrustConstant"))
+        this->dataPtr->ThrustPolynomial.push_back(sdfClone->GetElement("a5ThrustConstant")->Get<double>());
+      if(sdfClone->HasElement("a4TorqueConstant"))
+        this->dataPtr->TorquePolynomial.push_back(sdfClone->GetElement("a4TorqueConstant")->Get<double>());
+      if(sdfClone->HasElement("a5TorqueConstant"))
+        this->dataPtr->TorquePolynomial.push_back(sdfClone->GetElement("a5TorqueConstant")->Get<double>());
+
+      // print final polynomial values
+      gzdbg << "Added motor " << this->dataPtr->actuatorNumber << ". Thrust polynomial: ";
+      for (const auto &coeff : this->dataPtr->ThrustPolynomial)
+        gzdbg << coeff << " ";
+      gzdbg << "/ Torque polynomial: ";
+      for (const auto &coeff : this->dataPtr->TorquePolynomial)
+       gzdbg << coeff << " ";
+      gzdbg << "." << std::endl;
     }
     else
     {
