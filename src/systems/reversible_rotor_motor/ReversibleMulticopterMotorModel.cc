@@ -285,18 +285,16 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
       this->motorInputVel = std::clamp(msg->normalized(this->motorNumber), -1.0, 1.0) * this->maxRotVelocity;  
     }
   } else {
-    gzerr << "No actuator message received\n";
     return;
   }
-  gzerr << "Message Received " << this->motorInputVel << std::endl;
-
 
   sim::Link link(this->linkEntity);
   const auto worldPose = link.WorldPose(_ecm);
   using Vector3 = math::Vector3d;
 
-  if  (!worldPose.has_value())
+  if  (!worldPose.has_value()) {
     gzerr << "worldPose is null.\n";
+  }
 
   // Compute thrust according to the polynomial we have defined
   double thrust = 0.0;
@@ -305,29 +303,14 @@ void ReversibleMulticopterMotorModelPrivate::UpdateForcesAndMoments(
   }
   link.AddWorldForce(_ecm, worldPose->Rot().RotateVector(Vector3(0, 0, thrust)));
 
-
   const auto baseLinkPose = _ecm.Component<components::WorldPose>(this->parentLinkEntity);
   if (baseLinkPose) {
       math::Quaterniond worldToBaseLinkRot = baseLinkPose->Data().Rot().Inverse();
       math::Vector3d thrustInBaseLinkFrame = worldToBaseLinkRot.RotateVector(worldPose->Rot().RotateVector(Vector3(0, 0, thrust)));
 
-      //gzerr << "Motor " << this->motorNumber
-      //<< " | Distance to base_link: " 
-      //<< (worldPose->Pos() - baseLinkPose->Data().Pos()).Length()
-      //<< " | Position relative to base_link: " 
-      //<< baseLinkPose->Data().Rot().Inverse().RotateVector(worldPose->Pos() - baseLinkPose->Data().Pos())
-      //<< " | Rotation relative to base_link: " 
-      //<< (baseLinkPose->Data().Rot().Inverse() * worldPose->Rot())
-      //<< "| World Frame Thrust : "
-      //<< worldPose->Rot().RotateVector(Vector3(0, 0, thrust))
-      //<< "| Base Link Frame Thrust : "
-      //<< thrustInBaseLinkFrame
-      //<< std::endl;
-
       auto distance_to_base_link = (worldPose->Pos() - baseLinkPose->Data().Pos()).Length();
       auto position_relative_to_base_link = baseLinkPose->Data().Rot().Inverse().RotateVector(worldPose->Pos() - baseLinkPose->Data().Pos());
       auto rotation_relative_to_base_link = (baseLinkPose->Data().Rot().Inverse() * worldPose->Rot());
-
   }
 
 
